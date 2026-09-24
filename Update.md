@@ -284,3 +284,111 @@ data Phase 4 left behind.
   this phase was manual (API calls + browser), same as Phase 4.
 - `sp_GetBackorderByOrderId` is still unused by the service (see Phase 6 note) —
   left in place for a possible future backorder-management view.
+
+## Phase 8 — DB Delta: CHANGE2 (Fulfil an Open Backorder) (2026-09-24)
+Change requirement 2: use newly available inventory to fulfil an existing Open
+backorder. DB-only delta — did **not** rebuild the Phase 1-7 schema.
+- `tables/08_M08944_Backorder_AddColumns.sql` ALTERs the existing
+  `M08944_Backorder` table (from Phase 5) in place — never drops it or a row:
+  - Adds `createdAt` (`DATETIME2`, defaulted to `SYSUTCDATETIME()`, backfilled
+    for existing rows) so the oldest Open backorder per product can be found.
+  - Adds `remainingQuantity` (`INT`, backfilled from `backorderedQuantity` for
+    existing rows) — the current outstanding amount, which shrinks as new
+    inventory is applied; kept distinct from `backorderedQuantity`, which
+    stays as the amount recorded when the backorder was created.
+  - Adds a `CHECK` constraint limiting `status` to `'Open'`/`'Closed'` — the
+    API's third literal, `'NoOpenBackorder'`, is a response-only value for
+    "no backorder row found," never persisted.
+- New stored procedures: `M08944_sp_GetOldestOpenBackorderByProduct`
+  (`createdAt` asc, `orderId` tie-break, joins `M08944_Order` to get from
+  `productId` to the backorder's `orderId`), `M08944_sp_UpdateBackorder`
+  (`remainingQuantity`/`status`), `M08944_sp_UpdateFulfilmentResult` (the
+  UPDATE counterpart to `sp_SaveFulfilmentResult`, for an order's
+  `releasedQuantity`/`backorderedQuantity`/`status` once a backorder is
+  fulfilled).
+- Also redefined `M08944_sp_CreateBackorder` (DROP+CREATE, new file
+  `procedures/20_M08944_sp_CreateBackorder.sql`) to populate the two new
+  columns. Not in the literal SP list for this phase, but required: once
+  `remainingQuantity` is `NOT NULL` with no valid static `DEFAULT` (it must
+  equal that row's own `backorderedQuantity`), every future backorder
+  creation would otherwise fail.
+- Verified by executing all five scripts against the live MSSQL instance
+  already configured for this project: columns/constraints came out as
+  expected, the 3 existing Phase 6/7 backorder rows backfilled correctly,
+  the new procs run without error, and the `status` `CHECK` constraint
+  correctly rejects an invalid value.
+- Updated `backend/src/database/sql/README.md` with the Phase 8 run order.
+
+## Phase 9 — Backend: POST /inventory-availability, CHANGE2 (2026-09-24)
+Wired the Phase 8 DB delta into a new endpoint. Did not touch Stage 1/2 order
+logic (`orders.service.ts` is unchanged) — reused the existing
+`allocationRepository.createAllocation` and added new repository functions
+alongside the existing ones, never modifying them.
+
+- New files: `services/inventoryAvailability.service.ts`,
+  `controllers/inventoryAvailability.controller.ts`,
+  `routes/inventoryAvailability.routes.ts` (mounted at
+  `POST /inventory-availability` in `routes/index.ts`), plus a
+  `validateInventoryAvailabilityRequest` in `utils/validation.ts`.
+- New repository functions (existing ones untouched):
+  `backorderRepository.getOldestOpenBackorderByProduct`,
+  `backorderRepository.updateBackorder`,
+  `fulfilmentResultRepository.updateFulfilmentResult`.
+- Logic in `inventoryAvailability.service.ts`:
+  - No Open backorder for `productId` → still records the submitted
+    inventory (see below), returns
+    `{orderId:null, backorderStatus:"NoOpenBackorder", releasedQuantity:0,
+    backorderedQuantity:0, allocation:null}`. The change request's "Business
+    Change" paragraph separates *recording* new inventory (unconditional)
+    from *applying* it to a backorder (conditional on one existing), so
+    recording still happens even with no backorder to fulfil — the response
+    schema has no field for it either way, since it's entirely about
+    order/backorder status.
+  - Otherwise: picks the oldest Open backorder (`createdAt` asc, `orderId`
+    tie-break, via the Phase 8 proc), allocates
+    `min(availableQuantity, remainingQuantity)` — never more than what's
+    remaining — as one new `M08944_Allocation` row for the submitted
+    warehouse, updates the backorder's `remainingQuantity`/`status`
+    (`Closed` at 0, else `Open`), and updates the order's
+    `releasedQuantity`/`backorderedQuantity`/`status` (flips
+    `PartiallyReleased` → `Released` once `backorderedQuantity` hits 0).
+    All in one transaction via the existing `withTransaction` helper.
+  - Inventory side effect (`recordNewInventoryArrival`): increases
+    `availableQuantity` by the *net* of what was submitted minus what got
+    allocated — implemented as a single adjustment, reusing the existing
+    Stage 1/2 decrement proc (`M08944_sp_UpdateInventoryQty`) with a
+    *negative* delta, rather than two separate writes or a new proc, since
+    at the SQL level "increase" and "decrement" are the same
+    `availableQuantity = availableQuantity - @quantity` operation. Net
+    effect matches the change request's own framing exactly: "leftover
+    beyond the backorder stays as available inventory."
+  - Gap-fill decision (flagged, not confirmed, same convention as Phase 2's
+    FRD gaps): if no inventory row exists yet for that `productId`/
+    `warehouseId` (not covered by the change request, which assumes one
+    already exists), one is created with `earliestDispatchDate` defaulted to
+    today, since the stock is being reported available right now.
+- `tsc --noEmit` and `npm run build` both pass.
+- Verified end-to-end against the live MSSQL instance, reusing the exact
+  Priority order from Phase 7's own worked-example test
+  (`ORD-P7-PRI-GE70-1`: ordered 100, already released 75, backordered 25 on
+  `PROD-P7-GE70`, WH-A/WH-B both at 0 available):
+  | Step | Request | Result |
+  |---|---|---|
+  | 1 | `POST /inventory-availability {productId:"PROD-P7-GE70", warehouseId:"WH-A", availableQuantity:20}` | ✅ `{orderId:"ORD-P7-PRI-GE70-1", backorderStatus:"Open", releasedQuantity:95, backorderedQuantity:5, allocation:{warehouseId:"WH-A", allocatedQuantity:20}}` — matches the change doc's own "Partial Fulfilment Response" example exactly; inventory unchanged (20 submitted, 20 allocated, net 0) |
+  | 2 | `POST /inventory-availability {productId:"PROD-P7-GE70", warehouseId:"WH-A", availableQuantity:10}` | ✅ `{orderId:"ORD-P7-PRI-GE70-1", backorderStatus:"Closed", releasedQuantity:100, backorderedQuantity:0, allocation:{warehouseId:"WH-A", allocatedQuantity:5}}` — matches the change doc's "Full Fulfilment Response" example exactly; `M08944_Inventory` WH-A rose by 5 (10 submitted, only 5 allocated, "never allocate more than remaining") |
+  | 3 | `GET /orders/ORD-P7-PRI-GE70-1` after both | ✅ `status:"Released"` (flipped from `PartiallyReleased`), `releasedQuantity:100`, `backorderedQuantity:0`, 4 allocation rows total (2 from Phase 7 + 2 new) |
+  | 4 | `POST /inventory-availability` again for `PROD-P7-GE70` (backorder now Closed) | ✅ `NoOpenBackorder`, `orderId:null`, `allocation:null`; inventory still recorded in full (no backorder to consume it) |
+  | 5 | `POST /inventory-availability` for `PROD-A` (Standard-only product, never had a backorder) | ✅ `NoOpenBackorder`; inventory recorded |
+  | 6 | `POST /inventory-availability` for a brand-new `productId`/`warehouseId` with no existing row | ✅ `NoOpenBackorder`; new inventory row created with today's `earliestDispatchDate` |
+  | 7 | Invalid `warehouseId` / negative `availableQuantity` | ✅ both `400` with field-level `details` |
+- Did not re-run the full Phase 4/7 Stage 1/2 regression suite this phase —
+  `orders.service.ts` was not touched, and Phase 7 already re-verified that
+  path in depth; step 3 above (`GET /orders/:orderId` for the order this
+  phase modified) is the direct regression check for this change.
+
+### Not done / open
+- Frontend: no UI for `POST /inventory-availability` — not asked for in this
+  phase (Phase 9 was backend-only, mirroring Phase 6's scope).
+- No automated test suite — still none in this repo.
+- The gap-fill decision above (defaulting `earliestDispatchDate` to today for
+  a never-before-seen inventory row) is proposed, not confirmed.

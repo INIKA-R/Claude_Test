@@ -49,3 +49,20 @@ export async function saveFulfilmentResult(
     .input("backorderedQuantity", sql.Int, result.backorderedQuantity)
     .execute("M08944_sp_SaveFulfilmentResult");
 }
+
+// CHANGE2 (Phase 9): updates an existing FulfilmentResult row once a
+// backorder is (partially or fully) fulfilled from new inventory. Unlike
+// saveFulfilmentResult (INSERT, order-creation time), this assumes the row
+// already exists.
+export async function updateFulfilmentResult(
+  result: Pick<FulfilmentResult, "orderId" | "status" | "releasedQuantity" | "backorderedQuantity">,
+  request?: sql.Request
+): Promise<void> {
+  const req = await getRequest(request);
+  await req
+    .input("orderId", sql.VarChar(50), result.orderId)
+    .input("status", sql.VarChar(20), result.status)
+    .input("releasedQuantity", sql.Int, result.releasedQuantity)
+    .input("backorderedQuantity", sql.Int, result.backorderedQuantity)
+    .execute("M08944_sp_UpdateFulfilmentResult");
+}

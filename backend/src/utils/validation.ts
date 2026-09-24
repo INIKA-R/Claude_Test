@@ -106,3 +106,21 @@ export function validateUpdateInventoryRequest(body: unknown): string[] {
 
   return errors;
 }
+
+export function validateInventoryAvailabilityRequest(body: unknown): string[] {
+  const errors: string[] = [];
+  if (typeof body !== "object" || body === null) {
+    return ["Request body must be a JSON object"];
+  }
+  const b = body as Record<string, unknown>;
+
+  if (!isNonEmptyString(b.productId)) errors.push("productId is required");
+  if (!isNonEmptyString(b.warehouseId) || !WAREHOUSE_IDS.includes(b.warehouseId as string)) {
+    errors.push(`warehouseId is required and must be one of: ${WAREHOUSE_IDS.join(", ")}`);
+  }
+  if (!isPositiveInteger(b.availableQuantity)) {
+    errors.push("availableQuantity is required and must be an integer > 0");
+  }
+
+  return errors;
+}

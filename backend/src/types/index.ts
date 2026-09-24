@@ -93,3 +93,29 @@ export interface UpdateInventoryRequest {
   availableQuantity: number;
   earliestDispatchDate: string;
 }
+
+// CHANGE2 (Phase 9): fulfil an Open backorder from newly available inventory.
+
+export type BackorderStatus = "Open" | "Closed";
+
+export interface Backorder {
+  orderId: string;
+  backorderedQuantity: number;
+  remainingQuantity: number;
+  status: BackorderStatus;
+  createdAt: string;
+}
+
+export interface InventoryAvailabilityRequest {
+  productId: string;
+  warehouseId: WarehouseId;
+  availableQuantity: number;
+}
+
+export interface InventoryAvailabilityResponse {
+  orderId: string | null;
+  backorderStatus: BackorderStatus | "NoOpenBackorder";
+  releasedQuantity: number;
+  backorderedQuantity: number;
+  allocation: { warehouseId: WarehouseId; allocatedQuantity: number } | null;
+}
