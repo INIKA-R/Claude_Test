@@ -57,10 +57,28 @@ receive data/handlers as props.
 - Inline "modal" confirmation for delete uses `window.confirm` rather than a styled
   dialog — kept simple since no design system/dialog primitive was specified.
 
+## CHANGE1 result display (Phase 7)
+`OrderSubmissionPage` and `OrderResultLookupPage` already rendered
+`backorderedQuantity` and looped over every `allocations` row generically (built
+Phase 3, before CHANGE1 existed), and `Badge`'s `fulfilmentStatusTone` already had an
+amber case for `"PartiallyReleased"`. No new page/component was added; the existing
+result panel was extended in place:
+- Backordered Qty is now amber-highlighted when `> 0` (both pages), so a partial
+  release is visually distinct from a full one at a glance.
+- The allocations list header now shows `(N warehouses)` when there's more than one
+  allocation, so a Priority multi-warehouse release reads differently from a
+  Standard single-warehouse one.
+- `OrderSubmissionPage`'s submit toast previously assumed only two outcomes
+  (`Released` success / anything-else "blocked: {reason}"), which showed a
+  nonsensical "blocked: null" for a `PartiallyReleased` result (`reason` is always
+  `null` for that status). Fixed with a dedicated `toast.warning` branch reporting
+  released/backordered counts.
+
 ## Verified
-`npm install`, `tsc --noEmit`, and `npm run build` all pass. Manually exercised every
-page (nav, forms, loading/empty/error states, toasts) against the Phase 2 backend in
-this environment; there is no live MSSQL instance here, so all API calls surfaced a
-`500` from the backend's DB layer — confirming the frontend's error handling end-to-end,
-but not the Released/Blocked/idempotent-replay happy paths, which need a real database
-to exercise.
+`npm install`, `tsc --noEmit`, and `npm run build` all pass. Phase 3 exercised every
+page in an environment with no live MSSQL instance, confirming error handling but not
+the happy paths. Phase 7 re-ran the frontend against the real MSSQL instance used in
+Phase 4-6 and confirmed, via the browser, that a Priority partial release
+(`PartiallyReleased`, released 75 / backordered 25, two allocation rows) renders
+correctly on both the Order Submission and Order Lookup pages — see `Claude.md`'s
+Phase 7 verification table for the full scenario list.

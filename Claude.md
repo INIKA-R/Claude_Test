@@ -1,9 +1,11 @@
 # Claude.md — Architecture
 
-Order Fulfilment Application (Stage 1) — **feature-complete and verified end-to-end
-against a real MSSQL instance as of Phase 4**. Source of truth for business rules is
-`TEST_FRD.md`; this file is the up-to-date architecture reference for the codebase
-that implements it.
+Order Fulfilment Application — Stage 1 **feature-complete and verified end-to-end
+against a real MSSQL instance as of Phase 4**; the Stage 2 change requirement
+(**CHANGE1 — Priority partial fulfilment**) is implemented and verified end-to-end
+as of Phase 7. Source of truth for Stage 1 business rules is `TEST_FRD.md`; for the
+Stage 2 change it's `Change_Requirement.docx`. This file is the up-to-date
+architecture reference for the codebase that implements both.
 
 ## Stack
 - Frontend: React + TypeScript + Vite + Tailwind CSS
@@ -45,10 +47,16 @@ that implements it.
 │   inventory.routes.ts inventory.controller.ts inventory.service.ts       │  rules
 │        │                    │                       │                    │  live here
 │        ▼                    ▼                       ▼                    │
-│   validate request     shape response         FRD §3/§4 logic:           │
-│   (utils/validation)   (ApiError → 400/       eligibility gate,          │
-│                         404/409 via            single-warehouse match,   │
-│                         errorHandler)          WH-A>WH-B>WH-C tie-break,  │
+│   validate request     shape response         FRD §3/§4 logic +          │
+│   (utils/validation)   (ApiError → 400/       CHANGE1 (Priority):        │
+│                         404/409 via            eligibility gate,         │
+│                         errorHandler)          Standard: single-         │
+│                                                 warehouse match,          │
+│                                                 WH-A>WH-B>WH-C tie-break; │
+│                                                 Priority: combine         │
+│                                                 WH-A+WH-B+WH-C, >=70%     │
+│                                                 threshold (configurable)  │
+│                                                 releases + backorder;     │
 │                                                 idempotent replay         │
 │                                     │                                    │
 │                                     ▼                                    │
@@ -67,8 +75,9 @@ that implements it.
 ┌──────────────────────────────────────────────────────────────────────────┐
 │  MSSQL Server                                                             │
 │   Tables (FK-ordered): M08944_Customer → M08944_Inventory →              │
-│   M08944_Order → M08944_FulfilmentResult → M08944_Allocation             │
-│   Stored procs: 16 procs, one per DB operation (see Data model below)    │
+│   M08944_Order → M08944_FulfilmentResult → M08944_Allocation →           │
+│   M08944_Config → M08944_Backorder                                       │
+│   Stored procs: 19 procs, one per DB operation (see Data model below)    │
 └────────────────────────────────────────────────────────────────────────-─┘
 ```
 
@@ -115,8 +124,11 @@ back the whole order-creation attempt.
 
 ## API
 
-### Orders (FRD §5) — business rules apply, see below
-- `POST /orders` — create + evaluate fulfilment (Released/Blocked). Idempotent by `orderId`.
+### Orders (FRD §5, extended by CHANGE1) — business rules apply, see below
+- `POST /orders` — create + evaluate fulfilment (`Released`/`PartiallyReleased`/`Blocked`).
+  Idempotent by `orderId`. Request/response contract is unchanged by CHANGE1 — the
+  `PartiallyReleased` status, multi-row `allocations`, and non-zero
+  `backorderedQuantity` were already part of the Phase 1 response shape.
 - `GET /orders/:orderId` — fetch the persisted fulfilment result; `404` if none exists.
 
 ### Customers / Inventory — master-data CRUD (not in FRD §5; designed from FRD §2)
@@ -126,22 +138,34 @@ back the whole order-creation attempt.
 - `GET /inventory/:productId/:warehouseId`, `PUT .../:warehouseId`, `DELETE .../:warehouseId`
 
 ## Order fulfilment rules (FRD §3, §4) — `services/orders.service.ts`
-1. Idempotent replay: if a `FulfilmentResult` already exists for `orderId`, return it as-is (200), no reprocessing — verified for both Released and Blocked orders (Phase 4).
+Rules 1-3 apply to every order regardless of `customerType`. Rules 4-8 are the
+**Standard** path (Stage 1, unchanged by CHANGE1). Rules 9-13 are the **Priority**
+path added by CHANGE1 — see "Priority partial fulfilment" below for detail.
+1. Idempotent replay: if a `FulfilmentResult` already exists for `orderId`, return it as-is (200), no reprocessing — verified for both Released and Blocked orders (Phase 4), and for PartiallyReleased Priority orders (Phase 7).
 2. Eligibility gate: `CreditHold` → `Blocked-CreditHold`; `Unknown` → `Eligibility Unknown`; customer not found → `400`.
 3. No inventory row for the product anywhere → `Blocked`, reason `Product Not Available`.
-4. Single-warehouse match only: a warehouse qualifies if `availableQuantity >= quantity` and `earliestDispatchDate <= promisedDeliveryDate`.
-5. No qualifying warehouse → `Blocked`, reason `Cannot Fulfil From Single Warehouse`.
-6. Multiple qualify → fixed tie-break `WH-A > WH-B > WH-C`, always, even on identical stock/date — verified with two identically-stocked warehouses (Phase 4).
-7. Released → persist order + result + allocation, decrement the chosen warehouse's `availableQuantity`, all in one transaction.
-8. Blocked → persist order + result only; no allocation, no inventory change.
+4. Standard — single-warehouse match only: a warehouse qualifies if `availableQuantity >= quantity` and `earliestDispatchDate <= promisedDeliveryDate`.
+5. Standard — no qualifying warehouse → `Blocked`, reason `Cannot Fulfil From Single Warehouse`.
+6. Standard — multiple qualify → fixed tie-break `WH-A > WH-B > WH-C`, always, even on identical stock/date — verified with two identically-stocked warehouses (Phase 4).
+7. Standard — Released → persist order + result + allocation, decrement the chosen warehouse's `availableQuantity`, all in one transaction.
+8. Standard — Blocked → persist order + result only; no allocation, no inventory change.
 
-## Data model (FRD §2, §7)
+### Priority partial fulfilment (CHANGE1, added Phase 6) — `services/orders.service.ts`
+9. Priority — combine dispatch-eligible stock (`earliestDispatchDate <= promisedDeliveryDate`, same filter as rule 4) across `WH-A`, `WH-B`, `WH-C` in that fixed order, instead of requiring one warehouse to cover the full quantity.
+10. Priority — release threshold: if the combined available sum is `>= quantity * threshold` (threshold read from `M08944_Config` row `PriorityReleaseThresholdPct`, default/seeded `0.70`; exactly the threshold qualifies), release `min(availableSum, quantity)` — never more than requested — greedily allocated across the warehouses in rule 9's order; any remainder becomes one `Open` row in `M08944_Backorder`. Status is `Released` if the remainder is 0, else `PartiallyReleased`.
+11. Priority — below the threshold → `Blocked`, reason `Cannot Fulfil Priority Threshold` (proposed string, not specified by the change request — same convention as the FRD §4 "proposed — confirm" strings), no allocation, no backorder.
+12. Priority — Released/PartiallyReleased → persist order + result + one `M08944_Allocation` row per warehouse used + the inventory decrement per warehouse + the backorder (if any), all in the same transaction as the Standard path.
+13. The threshold is operator-configurable with no code change: editing `M08944_Config.configValue` for `configKey = 'PriorityReleaseThresholdPct'` takes effect on the next request (read fresh per request, not cached).
+
+## Data model (FRD §2, §7; extended by CHANGE1)
 Tables (prefix `M08944`, FK-dependency order):
 1. `M08944_Customer` — customerId (PK), eligibilityStatus
 2. `M08944_Inventory` — productId + warehouseId (composite PK), availableQuantity, earliestDispatchDate
 3. `M08944_Order` — orderId (PK), FK -> Customer, customerType, productId, quantity, promisedDeliveryDate
 4. `M08944_FulfilmentResult` — orderId (PK, FK -> Order), status, reason, releasedQuantity, backorderedQuantity, evaluatedAt
 5. `M08944_Allocation` — allocationId (surrogate PK), FK -> Order, warehouseId, allocatedQuantity
+6. `M08944_Config` (CHANGE1, Phase 5) — configKey (PK), configValue. Generic key/value store; seeded with `PriorityReleaseThresholdPct = 0.70`.
+7. `M08944_Backorder` (CHANGE1, Phase 5) — orderId (PK, FK -> Order), backorderedQuantity, status (default `'Open'`). One row per order, 1:1 like `M08944_FulfilmentResult`, not 1:many like `M08944_Allocation`.
 
 Stored procedures (all under `database/sql/procedures/`, all pure CRUD):
 - Order fulfilment (FRD §7): `M08944_sp_GetCustomer`, `M08944_sp_GetInventoryByProduct`,
@@ -151,6 +175,9 @@ Stored procedures (all under `database/sql/procedures/`, all pure CRUD):
   `M08944_sp_GetAllCustomers`, `M08944_sp_CreateCustomer`, `M08944_sp_UpdateCustomer`,
   `M08944_sp_DeleteCustomer`, `M08944_sp_GetInventoryByKey`, `M08944_sp_GetAllInventory`,
   `M08944_sp_CreateInventory`, `M08944_sp_UpdateInventory`, `M08944_sp_DeleteInventory`.
+- Priority partial fulfilment (CHANGE1, added Phase 5): `M08944_sp_CreateBackorder`,
+  `M08944_sp_GetBackorderByOrderId` (not yet called by the service — see Phase 6 entry
+  in `Update.md`), `M08944_sp_GetConfigValue` (generic by `@configKey`).
 
 See `backend/src/database/sql/README.md` for the exact SSMS execution order.
 
@@ -201,6 +228,38 @@ API calls and by driving the actual UI:
 | Customer/Inventory CRUD (create, list) | ✅ used to seed the above scenarios |
 
 No other errors found. The only defect was the dotenv/config-timing bug above.
+
+## End-to-end verification (Phase 7 — CHANGE1 Priority partial fulfilment)
+Re-ran the Phase 4 database (Phase 5's delta scripts already applied) against the
+Phase 6/7 code, both via direct API calls and by driving the actual UI. Stage 1
+scenarios were re-verified on **fresh orderIds** (not just replayed from Phase 4) to
+confirm the unchanged code paths still behave correctly, plus the Phase 4 orderIds
+were also replayed to confirm no regression to persisted data:
+
+| Scenario | Result |
+|---|---|
+| Standard Released, tie-break (WH-A & WH-B both qualify) | ✅ WH-A chosen |
+| Standard Released, only one warehouse qualifies (insufficient in the other) | ✅ correct warehouse chosen |
+| Standard Blocked — `Blocked-CreditHold` | ✅ |
+| Standard Blocked — `Product Not Available` | ✅ |
+| Standard Blocked — `Cannot Fulfil From Single Warehouse` | ✅ |
+| Idempotent replay — Phase 4's `ORD-RELEASED-1`, resubmitted with a different quantity | ✅ original stored result returned unchanged |
+| Idempotent replay — fresh Standard Released order, resubmitted with a different quantity | ✅ unchanged |
+| `GET /orders/:orderId` 404 for a non-existent order | ✅ |
+| `customerId` referencing a non-existent customer | ✅ `400 Customer not found` |
+| Priority, combined stock ≥ 70% and < 100% (WH-A=40 + WH-B=35 of qty 100, the change request's own worked example) | ✅ `PartiallyReleased`, released 75 / backordered 25, allocations `[WH-A:40, WH-B:35]`, one `Open` backorder row |
+| Priority, combined stock **exactly** 70% (WH-A=50 + WH-B=20 of qty 100) | ✅ qualifies (boundary inclusive) — `PartiallyReleased`, released 70 / backordered 30 |
+| Priority, combined stock < 70% (WH-A=40 + WH-B=29 of qty 100 = 69%) | ✅ `Blocked`, reason `Cannot Fulfil Priority Threshold`, no allocation, no backorder, inventory untouched |
+| Priority, combined stock = 100% across two warehouses (WH-A=60 + WH-B=40 of qty 100) | ✅ `Released` (not `PartiallyReleased`), backordered 0, no backorder row, allocations `[WH-A:60, WH-B:40]` |
+| Priority, one warehouse has enough stock but dispatches after `promisedDeliveryDate` | ✅ excluded from the combine — only the other warehouse's stock counted, correctly `Blocked` when that's under 70% |
+| Idempotent replay — Priority `PartiallyReleased` order, resubmitted with a different quantity | ✅ original stored result returned unchanged; confirmed via DB query that `M08944_Allocation`/`M08944_Backorder`/`M08944_FulfilmentResult` each still have exactly the rows from the first submission, no duplicates |
+| Frontend: Order Submission page shows `PartiallyReleased` badge, backordered qty (amber-highlighted), and multiple allocation rows with a "(N warehouses)" count | ✅ (screenshot-verified) |
+| Frontend: Order Lookup page shows the same for a persisted Priority order | ✅ |
+
+No regressions found in the Standard path; all five new Priority scenarios plus the
+Priority replay case behaved exactly as specified. Verification test data
+(`CUST-P7-*`, `PROD-P7-*`, `ORD-P7-*`) was left in the database, isolated by prefix,
+following the same convention as the Phase 4 sample data.
 
 ## Environment
 Each app has its own `.env` / `.env.example` (gitignored). See

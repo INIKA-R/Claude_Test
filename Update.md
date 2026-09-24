@@ -199,3 +199,88 @@ branch alongside it.
   automated test suite exists in this repo yet (Phase 1-4 verification was
   manual against real MSSQL), and `Claude.md`'s architecture text/rules
   section still describes Stage 1 only.
+
+## Phase 7 — Frontend Delta + Regression + Submission: CHANGE1 (2026-09-24)
+
+### Frontend delta
+Reused the existing Order Submission / Order Result Lookup pages and components —
+no new pages or components. Both pages already rendered `backorderedQuantity` and
+looped generically over every `allocations` row (built in Phase 3, before this
+change requirement existed), and `Badge.fulfilmentStatusTone` already had an amber
+case for `"PartiallyReleased"`. What was actually missing/wrong:
+- `OrderSubmissionPage`'s submit toast only handled two outcomes (`Released`
+  success, else "blocked: {reason}"), which showed a nonsensical
+  "blocked: null" for `PartiallyReleased` (`reason` is always `null` for that
+  status). Added a `toast.warning` branch reporting released/backordered counts.
+- Backordered Qty is now amber-highlighted when `> 0` on both pages, and the
+  allocations header shows `(N warehouses)` when there's more than one row, so a
+  Priority multi-warehouse partial release is visually distinct from a Standard
+  single-warehouse release.
+- `tsc --noEmit` passes.
+
+### Regression + new-scenario verification
+This environment has network access to the real MSSQL instance configured in
+`backend/.env` (the same one used for Phase 4-6), and Phase 5's delta scripts were
+already applied to it. Started the real backend against it and drove both the API
+directly and the actual UI — this is a genuine re-run, not a re-statement of Phase 4.
+
+**Stage 1 regression** (fresh orderIds, proving the *code path* still works, not
+just replaying stored data; plus the original Phase 4 orderIds replayed too):
+| Scenario | orderId | Result |
+|---|---|---|
+| Released, tie-break (WH-A & WH-B both qualify) | `ORD-P7-STD-RELEASED-1` | ✅ WH-A chosen (qty 5 vs WH-A=6/WH-B=10) |
+| Released, only one warehouse qualifies | `ORD-P7-STD-RELEASED-2` | ✅ WH-B chosen (qty 8, WH-A had only 1 left after the above) |
+| Blocked — `Blocked-CreditHold` | `ORD-P7-STD-BLOCKED-CREDITHOLD-1` | ✅ |
+| Blocked — `Product Not Available` | `ORD-P7-STD-BLOCKED-NOPRODUCT-1` | ✅ |
+| Blocked — `Cannot Fulfil From Single Warehouse` | `ORD-P7-STD-BLOCKED-SINGLEWH-1` | ✅ (WH-A=2 < qty 5) |
+| Idempotent replay, Phase 4 order, resubmitted with `quantity: 999` | `ORD-RELEASED-1` | ✅ original stored result (`releasedQuantity: 5`, WH-A) returned unchanged |
+| Idempotent replay, fresh order, resubmitted with `quantity: 999` | `ORD-P7-STD-RELEASED-1` | ✅ unchanged |
+| `GET /orders/:orderId` 404 | `ORD-P7-DOES-NOT-EXIST` | ✅ `404 {orderId, error:"Order not Found"}` |
+| `400 Customer not found` | `ORD-P7-CUSTOMER-404` | ✅ `400 {error:"Customer not found", details:{customerId}}` |
+
+**New Priority scenarios**:
+| Scenario | orderId | Inventory | Result |
+|---|---|---|---|
+| ≥70%, <100% (the change request's own worked example) | `ORD-P7-PRI-GE70-1` | WH-A=40, WH-B=35, qty 100 (75%) | ✅ `PartiallyReleased`, released 75 / backordered 25, allocations `[WH-A:40, WH-B:35]`, exactly one `Open` `M08944_Backorder` row |
+| Exactly 70% | `ORD-P7-PRI-EQ70-1` | WH-A=50, WH-B=20, qty 100 (70%) | ✅ qualifies (boundary inclusive) — `PartiallyReleased`, released 70 / backordered 30 |
+| <70% | `ORD-P7-PRI-LT70-1` | WH-A=40, WH-B=29, qty 100 (69%) | ✅ `Blocked`, reason `Cannot Fulfil Priority Threshold`, no allocation, no backorder, inventory left untouched (confirmed by re-querying `M08944_Inventory`) |
+| 100%, split across two warehouses | `ORD-P7-PRI-FULL-1` | WH-A=60, WH-B=40, qty 100 (100%) | ✅ `Released` (not `PartiallyReleased`), backordered 0, no backorder row, allocations `[WH-A:60, WH-B:40]` |
+| Dispatch-date filter applies per warehouse in the combine, not just in aggregate | `ORD-P7-PRI-DATE-1` | WH-A=60 but dispatches after `promisedDeliveryDate` (excluded), WH-B=10 eligible, qty 50 (20% of eligible-only stock) | ✅ `Blocked`, `Cannot Fulfil Priority Threshold` — confirms the Stage 1 `earliestDispatchDate <= promisedDeliveryDate` rule was actually reused, not silently dropped, for the Priority path |
+| Resubmission of a completed Priority `PartiallyReleased` order, with a different `quantity: 999` | `ORD-P7-PRI-GE70-1` | (already allocated above) | ✅ original stored result returned unchanged; `SELECT` against `M08944_Allocation`/`M08944_Backorder`/`M08944_FulfilmentResult` confirmed exactly the rows from the first submission (2 allocations, 1 backorder, 1 result row) — no duplicates from the replay |
+
+**Frontend UI** (browser-driven, against the live backend above): submitted a fresh
+Priority order (`ORD-P7-UI-1`, WH-A=45/WH-B=30, qty 100 → 75%) via the Order
+Submission page and confirmed the result panel showed the `PartiallyReleased` badge,
+released/backordered 75/25 with backordered amber-highlighted, and
+"ALLOCATIONS (2 WAREHOUSES)" listing WH-A:45/WH-B:30; then looked the same order up
+on the Order Result Lookup page and confirmed it rendered identically.
+
+No regressions found anywhere in the Standard/eligibility-gate path; every new
+Priority scenario and the Priority replay case matched the change request exactly,
+including the boundary case (exactly 70% qualifies) and the "never allocate more
+than requested" rule (100% case releases exactly 100, not more).
+
+Verification fixtures (`CUST-P7-*`, `PROD-P7-*`, `ORD-P7-*`) were left in the
+database, isolated by prefix from all Phase 4 data — same convention as the sample
+data Phase 4 left behind.
+
+### Docs updated
+- `Claude.md`: header now covers both Stage 1 and CHANGE1; architecture diagram's
+  services box and MSSQL table/proc counts updated; "Order fulfilment rules"
+  section split into Standard (unchanged) + a new "Priority partial fulfilment"
+  subsection (rules 9-13); "Data model" lists `M08944_Config`/`M08944_Backorder`
+  and the 3 new SPs; added a Phase 7 end-to-end verification table alongside the
+  existing (still-accurate) Phase 4 one.
+- `Frontend.md`: added a "CHANGE1 result display" section describing what was
+  already generic vs. what actually changed (the toast bug, the amber
+  highlight, the warehouse count label); updated "Verified" to record the Phase 7
+  browser-driven Priority verification.
+- No `Backend.md` exists in this repo (checked again this phase) — `Claude.md` is
+  the architecture doc that covers the backend; nothing to update there beyond
+  what's listed above.
+
+### Not done / open
+- No automated test suite was added — still none in this repo. All verification
+  this phase was manual (API calls + browser), same as Phase 4.
+- `sp_GetBackorderByOrderId` is still unused by the service (see Phase 6 note) —
+  left in place for a possible future backorder-management view.

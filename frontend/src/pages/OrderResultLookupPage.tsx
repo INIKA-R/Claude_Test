@@ -109,13 +109,22 @@ export default function OrderResultLookupPage() {
               </div>
               <div>
                 <p className="text-xs uppercase tracking-wide text-slate-400">Backordered Qty</p>
-                <p className="font-medium text-slate-700">{state.result.backorderedQuantity}</p>
+                <p
+                  className={`font-medium ${
+                    state.result.backorderedQuantity > 0 ? "text-amber-600" : "text-slate-700"
+                  }`}
+                >
+                  {state.result.backorderedQuantity}
+                </p>
               </div>
             </div>
 
             {state.result.allocations.length > 0 && (
               <div className="mt-4">
-                <p className="mb-2 text-xs uppercase tracking-wide text-slate-400">Allocations</p>
+                <p className="mb-2 text-xs uppercase tracking-wide text-slate-400">
+                  Allocations{" "}
+                  {state.result.allocations.length > 1 && `(${state.result.allocations.length} warehouses)`}
+                </p>
                 <ul className="flex flex-col gap-1">
                   {state.result.allocations.map((allocation) => (
                     <li

@@ -65,6 +65,10 @@ export default function OrderSubmissionPage() {
       setResult(response);
       if (response.status === "Released") {
         toast.success(`Order ${response.orderId} released`);
+      } else if (response.status === "PartiallyReleased") {
+        toast.warning(
+          `Order ${response.orderId} partially released: ${response.releasedQuantity} released, ${response.backorderedQuantity} backordered`
+        );
       } else {
         toast.info(`Order ${response.orderId} blocked: ${response.reason}`);
       }
@@ -153,13 +157,21 @@ export default function OrderSubmissionPage() {
               </div>
               <div>
                 <p className="text-xs uppercase tracking-wide text-slate-400">Backordered Qty</p>
-                <p className="font-medium text-slate-700">{result.backorderedQuantity}</p>
+                <p
+                  className={`font-medium ${
+                    result.backorderedQuantity > 0 ? "text-amber-600" : "text-slate-700"
+                  }`}
+                >
+                  {result.backorderedQuantity}
+                </p>
               </div>
             </div>
 
             {result.allocations.length > 0 && (
               <div className="mt-4">
-                <p className="mb-2 text-xs uppercase tracking-wide text-slate-400">Allocations</p>
+                <p className="mb-2 text-xs uppercase tracking-wide text-slate-400">
+                  Allocations {result.allocations.length > 1 && `(${result.allocations.length} warehouses)`}
+                </p>
                 <ul className="flex flex-col gap-1">
                   {result.allocations.map((allocation) => (
                     <li
