@@ -6,6 +6,41 @@ export type CustomerType = "Standard" | "Priority";
 
 export type WarehouseId = "WH-A" | "WH-B" | "WH-C";
 
+export type EligibilityStatus = "Eligible" | "CreditHold" | "Unknown";
+
+export interface Customer {
+  customerId: string;
+  eligibilityStatus: EligibilityStatus;
+}
+
+export interface CreateCustomerRequest {
+  customerId: string;
+  eligibilityStatus: EligibilityStatus;
+}
+
+export interface UpdateCustomerRequest {
+  eligibilityStatus: EligibilityStatus;
+}
+
+export interface Inventory {
+  productId: string;
+  warehouseId: WarehouseId;
+  availableQuantity: number;
+  earliestDispatchDate: string; // YYYY-MM-DD
+}
+
+export interface CreateInventoryRequest {
+  productId: string;
+  warehouseId: WarehouseId;
+  availableQuantity: number;
+  earliestDispatchDate: string;
+}
+
+export interface UpdateInventoryRequest {
+  availableQuantity: number;
+  earliestDispatchDate: string;
+}
+
 export interface Allocation {
   orderId: string;
   warehouseId: WarehouseId;
@@ -28,4 +63,9 @@ export interface FulfilmentResponse {
   releasedQuantity: number;
   backorderedQuantity: number;
   allocations: Allocation[];
+}
+
+export interface ApiErrorResponse {
+  error: string;
+  details?: string[] | unknown;
 }
