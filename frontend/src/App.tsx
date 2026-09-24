@@ -1,6 +1,7 @@
 import { BrowserRouter, Navigate, Route, Routes } from "react-router-dom";
 import { Layout } from "./components/Layout";
 import CustomerMaintenancePage from "./pages/CustomerMaintenancePage";
+import InventoryAvailabilityPage from "./pages/InventoryAvailabilityPage";
 import InventoryMaintenancePage from "./pages/InventoryMaintenancePage";
 import OrderResultLookupPage from "./pages/OrderResultLookupPage";
 import OrderSubmissionPage from "./pages/OrderSubmissionPage";
@@ -13,6 +14,7 @@ function App() {
           <Route index element={<Navigate to="/orders/new" replace />} />
           <Route path="customers" element={<CustomerMaintenancePage />} />
           <Route path="inventory" element={<InventoryMaintenancePage />} />
+          <Route path="inventory-availability" element={<InventoryAvailabilityPage />} />
           <Route path="orders/new" element={<OrderSubmissionPage />} />
           <Route path="orders/lookup" element={<OrderResultLookupPage />} />
           <Route path="*" element={<Navigate to="/orders/new" replace />} />

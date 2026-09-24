@@ -1,9 +1,10 @@
 import { NavLink } from "react-router-dom";
-import { Boxes, PackagePlus, Search, Users } from "lucide-react";
+import { Boxes, PackagePlus, Search, Truck, Users } from "lucide-react";
 
 const NAV_ITEMS = [
   { to: "/customers", label: "Customers", icon: Users },
   { to: "/inventory", label: "Inventory", icon: Boxes },
+  { to: "/inventory-availability", label: "Restock", icon: Truck },
   { to: "/orders/new", label: "New Order", icon: PackagePlus },
   { to: "/orders/lookup", label: "Order Lookup", icon: Search },
 ];

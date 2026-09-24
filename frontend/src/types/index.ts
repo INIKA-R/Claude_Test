@@ -69,3 +69,21 @@ export interface ApiErrorResponse {
   error: string;
   details?: string[] | unknown;
 }
+
+// CHANGE2 (Phase 10): fulfil an Open backorder from newly available inventory.
+
+export type BackorderStatus = "Open" | "Closed";
+
+export interface InventoryAvailabilityRequest {
+  productId: string;
+  warehouseId: WarehouseId;
+  availableQuantity: number;
+}
+
+export interface InventoryAvailabilityResponse {
+  orderId: string | null;
+  backorderStatus: BackorderStatus | "NoOpenBackorder";
+  releasedQuantity: number;
+  backorderedQuantity: number;
+  allocation: { warehouseId: WarehouseId; allocatedQuantity: number } | null;
+}

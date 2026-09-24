@@ -1,11 +1,13 @@
 # Claude.md — Architecture
 
-Order Fulfilment Application — Stage 1 **feature-complete and verified end-to-end
-against a real MSSQL instance as of Phase 4**; the Stage 2 change requirement
-(**CHANGE1 — Priority partial fulfilment**) is implemented and verified end-to-end
-as of Phase 7. Source of truth for Stage 1 business rules is `TEST_FRD.md`; for the
-Stage 2 change it's `Change_Requirement.docx`. This file is the up-to-date
-architecture reference for the codebase that implements both.
+Order Fulfilment Application — **FINAL**. Stage 1 feature-complete and verified
+end-to-end against a real MSSQL instance as of Phase 4; the Stage 2 change
+requirement (**CHANGE1 — Priority partial fulfilment**) as of Phase 7; the Stage 3
+change requirement (**CHANGE2 — fulfil an Open backorder from newly available
+inventory**) as of Phase 10. Source of truth for Stage 1 business rules is
+`TEST_FRD.md`; for CHANGE1 it's `Change_Requirement.docx`; for CHANGE2 it's
+`Change_Requirement_2.docx`. This file is the up-to-date architecture reference for
+the codebase that implements all three.
 
 ## Stack
 - Frontend: React + TypeScript + Vite + Tailwind CSS
@@ -24,8 +26,9 @@ architecture reference for the codebase that implements both.
 │  │   pages/                    reusablecomponents/    components/       │  │
 │  │   ├─ CustomerMaintenance    Button, Card,          Navbar, Layout    │  │
 │  │   ├─ InventoryMaintenance   TextField, SelectField (routing, toast   │  │
-│  │   ├─ OrderSubmission        Badge, LoadingState,    container, page  │  │
-│  │   └─ OrderResultLookup      EmptyState, ErrorState  transitions)     │  │
+│  │   ├─ InventoryAvailability  Badge, LoadingState,    container, page  │  │
+│  │   ├─ OrderSubmission        EmptyState, ErrorState  transitions)     │  │
+│  │   └─ OrderResultLookup                                               │  │
 │  │        │                          ▲                                  │  │
 │  │        ▼                          │ props/render                    │  │
 │  │   hooks/useAsyncData.ts ──────────┘                                  │  │
@@ -33,7 +36,8 @@ architecture reference for the codebase that implements both.
 │  │        ▼                                                             │  │
 │  │   services/  (ONLY place that touches HTTP)                         │  │
 │  │   ├─ apiClient.ts   axios instance + getErrorMessage()               │  │
-│  │   ├─ customersApi.ts / inventoryApi.ts / ordersApi.ts                │  │
+│  │   ├─ customersApi.ts / inventoryApi.ts / ordersApi.ts /              │  │
+│  │   └─ inventoryAvailabilityApi.ts                                     │  │
 │  └────────┼───────────────────────────────────────────────────────────┘  │
 └───────────┼────────────────────────────────────────────────────────────-─┘
             │  REST/JSON over HTTP (CORS: CORS_ORIGIN)
@@ -41,23 +45,19 @@ architecture reference for the codebase that implements both.
 ┌──────────────────────────────────────────────────────────────────────────┐
 │  Express app (:5000)                                                      │
 │                                                                            │
-│   routes/            controllers/            services/                   │
-│   orders.routes.ts    orders.controller.ts    orders.service.ts          │
-│   customers.routes.ts customers.controller.ts customers.service.ts       │  business
-│   inventory.routes.ts inventory.controller.ts inventory.service.ts       │  rules
-│        │                    │                       │                    │  live here
-│        ▼                    ▼                       ▼                    │
-│   validate request     shape response         FRD §3/§4 logic +          │
-│   (utils/validation)   (ApiError → 400/       CHANGE1 (Priority):        │
-│                         404/409 via            eligibility gate,         │
-│                         errorHandler)          Standard: single-         │
-│                                                 warehouse match,          │
-│                                                 WH-A>WH-B>WH-C tie-break; │
-│                                                 Priority: combine         │
-│                                                 WH-A+WH-B+WH-C, >=70%     │
-│                                                 threshold (configurable)  │
-│                                                 releases + backorder;     │
-│                                                 idempotent replay         │
+│   routes/ -> controllers/ -> services/  (one trio per resource):         │
+│   ├─ orders.*                  -> orders.service.ts                      │
+│   │    FRD §3/§4 + CHANGE1: eligibility gate; Standard single-warehouse   │
+│   │    match + WH-A>WH-B>WH-C tie-break; Priority combine WH-A+WH-B+WH-C, │
+│   │    >=70% threshold (configurable) releases + backorder; idempotent    │
+│   ├─ customers.* / inventory.* -> customers.service.ts / inventory.      │
+│   │    service.ts (master-data CRUD)                                     │
+│   └─ inventoryAvailability.*   -> inventoryAvailability.service.ts       │
+│        CHANGE2: apply new stock to the oldest Open backorder per         │
+│        product, never more than its remaining amount                    │
+│                                     │                                    │
+│   validate request (utils/validation) -> shape response (ApiError ->     │
+│   400/404/409 via errorHandler) around each service call                │
 │                                     │                                    │
 │                                     ▼                                    │
 │   database/*.repository.ts  (DB layer — one file per entity;             │
@@ -76,8 +76,9 @@ architecture reference for the codebase that implements both.
 │  MSSQL Server                                                             │
 │   Tables (FK-ordered): M08944_Customer → M08944_Inventory →              │
 │   M08944_Order → M08944_FulfilmentResult → M08944_Allocation →           │
-│   M08944_Config → M08944_Backorder                                       │
-│   Stored procs: 19 procs, one per DB operation (see Data model below)    │
+│   M08944_Config → M08944_Backorder (createdAt/remainingQuantity          │
+│   added Phase 8, CHANGE2)                                                │
+│   Stored procs: 22 procs, one per DB operation (see Data model below)    │
 └────────────────────────────────────────────────────────────────────────-─┘
 ```
 
@@ -137,6 +138,16 @@ back the whole order-creation attempt.
 - `GET /inventory`, `POST /inventory`
 - `GET /inventory/:productId/:warehouseId`, `PUT .../:warehouseId`, `DELETE .../:warehouseId`
 
+### Inventory Availability (CHANGE2, Phase 9-10) — business rules apply, see below
+- `POST /inventory-availability` — `{productId, warehouseId, availableQuantity}`.
+  Always `200`. Records the submitted stock and, if an Open backorder exists for
+  `productId`, applies as much of it as possible to the single oldest one:
+  `{orderId, backorderStatus: "Open"|"Closed"|"NoOpenBackorder", releasedQuantity,
+  backorderedQuantity, allocation: {warehouseId, allocatedQuantity} | null}`. Not
+  idempotent by design — the change request doesn't require it ("duplicate
+  inventory-event... handling [is] not required"), and each call represents a
+  genuinely new physical stock event.
+
 ## Order fulfilment rules (FRD §3, §4) — `services/orders.service.ts`
 Rules 1-3 apply to every order regardless of `customerType`. Rules 4-8 are the
 **Standard** path (Stage 1, unchanged by CHANGE1). Rules 9-13 are the **Priority**
@@ -157,7 +168,17 @@ path added by CHANGE1 — see "Priority partial fulfilment" below for detail.
 12. Priority — Released/PartiallyReleased → persist order + result + one `M08944_Allocation` row per warehouse used + the inventory decrement per warehouse + the backorder (if any), all in the same transaction as the Standard path.
 13. The threshold is operator-configurable with no code change: editing `M08944_Config.configValue` for `configKey = 'PriorityReleaseThresholdPct'` takes effect on the next request (read fresh per request, not cached).
 
-## Data model (FRD §2, §7; extended by CHANGE1)
+### Backorder fulfilment (CHANGE2, added Phase 9-10) — `services/inventoryAvailability.service.ts`
+Does not touch `orders.service.ts` — reuses `allocationRepository.createAllocation`
+as-is; everything else is new repository functions alongside the existing ones.
+14. No Open backorder exists for `productId` → still records the submitted inventory (rule 17), returns `{orderId:null, backorderStatus:"NoOpenBackorder", releasedQuantity:0, backorderedQuantity:0, allocation:null}`.
+15. Otherwise → picks the single oldest Open backorder for `productId` (`createdAt` ascending, `orderId` as the tie-break), allocates `min(availableQuantity, remainingQuantity)` — never more than what's remaining — as one new `M08944_Allocation` row for the submitted warehouse.
+16. Updates the backorder's `remainingQuantity` and `status` (`Closed` once `remainingQuantity` hits 0, else stays `Open`) and the order's `releasedQuantity`/`backorderedQuantity`/`status` (flips `PartiallyReleased` → `Released` once `backorderedQuantity` hits 0) — all in one transaction, same `withTransaction` helper as the order-creation paths.
+17. Inventory side effect: `availableQuantity` increases by the *net* of submitted minus allocated (implemented as a single call to the existing decrement proc with a negative delta — same SQL operation, no new proc). If no inventory row exists yet for that `productId`/`warehouseId` (not covered by the change request), one is created with `earliestDispatchDate` defaulted to today — flagged the same way Phase 2's FRD gaps were, not formally confirmed.
+18. One inventory-availability submission processes at most one backorder, ever — never more, regardless of how much is left over after fulfilling it.
+19. Not required by the change request, and not implemented: idempotency/duplicate-event handling and concurrency control for this endpoint.
+
+## Data model (FRD §2, §7; extended by CHANGE1 and CHANGE2)
 Tables (prefix `M08944`, FK-dependency order):
 1. `M08944_Customer` — customerId (PK), eligibilityStatus
 2. `M08944_Inventory` — productId + warehouseId (composite PK), availableQuantity, earliestDispatchDate
@@ -165,7 +186,7 @@ Tables (prefix `M08944`, FK-dependency order):
 4. `M08944_FulfilmentResult` — orderId (PK, FK -> Order), status, reason, releasedQuantity, backorderedQuantity, evaluatedAt
 5. `M08944_Allocation` — allocationId (surrogate PK), FK -> Order, warehouseId, allocatedQuantity
 6. `M08944_Config` (CHANGE1, Phase 5) — configKey (PK), configValue. Generic key/value store; seeded with `PriorityReleaseThresholdPct = 0.70`.
-7. `M08944_Backorder` (CHANGE1, Phase 5) — orderId (PK, FK -> Order), backorderedQuantity, status (default `'Open'`). One row per order, 1:1 like `M08944_FulfilmentResult`, not 1:many like `M08944_Allocation`.
+7. `M08944_Backorder` (CHANGE1, Phase 5; extended CHANGE2, Phase 8) — orderId (PK, FK -> Order), backorderedQuantity (amount recorded at creation, historical), status (`'Open'`/`'Closed'`, `CHECK`-constrained since Phase 8), createdAt (Phase 8, for FIFO ordering), remainingQuantity (Phase 8, the current outstanding amount — shrinks as new inventory is applied, distinct from `backorderedQuantity`). One row per order, 1:1 like `M08944_FulfilmentResult`, not 1:many like `M08944_Allocation`.
 
 Stored procedures (all under `database/sql/procedures/`, all pure CRUD):
 - Order fulfilment (FRD §7): `M08944_sp_GetCustomer`, `M08944_sp_GetInventoryByProduct`,
@@ -175,9 +196,16 @@ Stored procedures (all under `database/sql/procedures/`, all pure CRUD):
   `M08944_sp_GetAllCustomers`, `M08944_sp_CreateCustomer`, `M08944_sp_UpdateCustomer`,
   `M08944_sp_DeleteCustomer`, `M08944_sp_GetInventoryByKey`, `M08944_sp_GetAllInventory`,
   `M08944_sp_CreateInventory`, `M08944_sp_UpdateInventory`, `M08944_sp_DeleteInventory`.
-- Priority partial fulfilment (CHANGE1, added Phase 5): `M08944_sp_CreateBackorder`,
-  `M08944_sp_GetBackorderByOrderId` (not yet called by the service — see Phase 6 entry
-  in `Update.md`), `M08944_sp_GetConfigValue` (generic by `@configKey`).
+- Priority partial fulfilment (CHANGE1, added Phase 5): `M08944_sp_CreateBackorder`
+  (redefined Phase 8 to also populate `createdAt`/`remainingQuantity`),
+  `M08944_sp_GetBackorderByOrderId` (still not called by any service — kept for a
+  possible future backorder-management view), `M08944_sp_GetConfigValue` (generic
+  by `@configKey`).
+- Backorder fulfilment (CHANGE2, added Phase 8): `M08944_sp_GetOldestOpenBackorderByProduct`
+  (`createdAt` asc, `orderId` tie-break, joins `M08944_Order`), `M08944_sp_UpdateBackorder`
+  (`remainingQuantity`/`status`), `M08944_sp_UpdateFulfilmentResult` (the UPDATE
+  counterpart to `sp_SaveFulfilmentResult`, for an order's
+  `releasedQuantity`/`backorderedQuantity`/`status`).
 
 See `backend/src/database/sql/README.md` for the exact SSMS execution order.
 
@@ -260,6 +288,30 @@ No regressions found in the Standard path; all five new Priority scenarios plus 
 Priority replay case behaved exactly as specified. Verification test data
 (`CUST-P7-*`, `PROD-P7-*`, `ORD-P7-*`) was left in the database, isolated by prefix,
 following the same convention as the Phase 4 sample data.
+
+## End-to-end verification (Phase 10 — CHANGE2 backorder fulfilment + full regression)
+Full regression re-run against the same live MSSQL instance, plus the new
+`POST /inventory-availability` scenarios, both via direct API calls and by driving
+the actual UI (including the new Inventory Availability page):
+
+| Scenario | Result |
+|---|---|
+| Stage 1: Standard Released, tie-break | ✅ (fresh orderId) |
+| Stage 1: idempotent replay, different quantity ignored | ✅ |
+| Stage 1: `GET /orders/:orderId` 404 | ✅ |
+| Stage 1: `400 Customer not found` | ✅ |
+| Stage 2: Priority 75% → `PartiallyReleased` (fresh orderId, doc's own example) | ✅ released 75 / backordered 25, allocations `[WH-A:40, WH-B:35]` |
+| Stage 3: sequential partial fills on one backorder (remaining 30 → submit 12 → remaining 18, `Open` → submit 18 → remaining 0, `Closed`) | ✅ matches the change doc's own worked example step-by-step; `GET /orders/:orderId` afterward shows `status:"Released"`, `releasedQuantity:100`, 4 total allocation rows |
+| Stage 3: full closure in one submission with leftover (remaining 25, submit 30 → allocate only 25, `Closed`, 5 stays as available inventory) | ✅ "never allocate more than remaining" confirmed; leftover correctly recorded as inventory |
+| Stage 3: no Open backorder for the product | ✅ `{orderId:null, backorderStatus:"NoOpenBackorder", allocation:null}`; inventory still recorded |
+| Frontend: Inventory Availability page shows `Open`/released/backordered/allocation for a real partial fulfilment | ✅ (screenshot-verified: submitting 10 against an 85/15-remaining Priority order showed `Open`, released 85, backordered 15, allocation `WH-A:10 units`) |
+| Frontend: Order Result Lookup page reflects the same order afterward with no page-code changes needed | ✅ (`PartiallyReleased`, 85/15, 3 allocation rows) |
+
+No regressions in Stage 1 or Stage 2. All Stage 3 scenarios — including the doc's
+exact sequential-fill numbers and the "never exceed remaining" boundary — matched.
+Verification data (`CUST-P10-*`, `PROD-P10-*`, `ORD-P10-*`, plus reuse of Phase 7's
+own `ORD-P7-PRI-EQ70-1`/`ORD-P7-UI-1`) was left in the database, same convention as
+every prior phase.
 
 ## Environment
 Each app has its own `.env` / `.env.example` (gitignored). See

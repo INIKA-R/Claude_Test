@@ -392,3 +392,87 @@ alongside the existing ones, never modifying them.
 - No automated test suite — still none in this repo.
 - The gap-fill decision above (defaulting `earliestDispatchDate` to today for
   a never-before-seen inventory row) is proposed, not confirmed.
+
+## Phase 10 — Frontend + Full Regression + Final Submission: CHANGE2, FINAL (2026-09-24)
+
+### Frontend delta
+One new page, no new design system — reused every existing form/result
+component:
+- `InventoryAvailabilityPage` (route `/inventory-availability`, nav item
+  "Restock" with a `Truck` icon): a form (Product ID `TextField`, Warehouse
+  `SelectField`, Available Quantity `TextField`) plus a result card built
+  from the exact same `Card`/`Badge` layout `OrderSubmissionPage` already
+  uses for Released Qty / Backordered Qty / allocation rows, adapted for the
+  single `allocation` object (not an array) and the `NoOpenBackorder` case
+  (shows "No Open backorder existed for this product." instead of a list).
+- New files: `pages/InventoryAvailabilityPage.tsx`,
+  `services/inventoryAvailabilityApi.ts`. One addition to an existing file:
+  `backorderStatusTone()` in `reusablecomponents/Badge.tsx`, alongside the
+  existing `fulfilmentStatusTone`/`eligibilityStatusTone` (green `Closed`,
+  amber `Open`, slate `NoOpenBackorder`) — same pattern, not a new component.
+  Wired into `App.tsx` (route) and `Navbar.tsx` (nav item).
+- Backend types (`BackorderStatus`, `InventoryAvailabilityRequest/Response`)
+  mirrored into `frontend/src/types/index.ts`, matching the existing
+  frontend/backend type-mirroring convention.
+- `tsc --noEmit` and `npm run build` both pass (frontend and backend).
+
+### Full regression (Stage 1 + Stage 2 + new Stage 3)
+Ran against the same live MSSQL instance used since Phase 4, via direct API
+calls and by driving the actual UI (including the new page):
+
+**Stage 1** (fresh orderIds — proving the code path, not replaying stored
+data): Standard Released with the WH-A/WH-B tie-break, idempotent replay
+with a different quantity ignored, `GET /orders/:orderId` 404, `400
+Customer not found`. All ✅, no regressions.
+
+**Stage 2** (fresh Priority order): the change request's own 40+35=75%
+example — `PartiallyReleased`, released 75 / backordered 25, allocations
+`[WH-A:40, WH-B:35]`. ✅, no regressions.
+
+**Stage 3** (new scenarios, per this change request's own worked example):
+| Scenario | Detail | Result |
+|---|---|---|
+| Sequential partial fills | `ORD-P7-PRI-EQ70-1` (remaining 30) — submit 12 to WH-B, then 18 to WH-A | ✅ fill 1: `{backorderStatus:"Open", releasedQuantity:82, backorderedQuantity:18, allocation:{WH-B:12}}`; fill 2: `{backorderStatus:"Closed", releasedQuantity:100, backorderedQuantity:0, allocation:{WH-A:18}}`; `GET /orders/ORD-P7-PRI-EQ70-1` afterward shows `status:"Released"`, 4 total allocation rows |
+| Full closure with leftover | `ORD-P7-UI-1` (remaining 25) — submit 30 to WH-B in one call | ✅ allocates only 25 (never exceeds remaining), `{backorderStatus:"Closed", releasedQuantity:100, backorderedQuantity:0, allocation:{WH-B:25}}`; the leftover 5 correctly persisted as `M08944_Inventory` availableQuantity for `PROD-P7-UI`/WH-B |
+| No Open backorder | `PROD-P7-LT70` (Blocked in Phase 7, never had a backorder) | ✅ `{orderId:null, backorderStatus:"NoOpenBackorder", releasedQuantity:0, backorderedQuantity:0, allocation:null}` |
+| Frontend, fresh Priority order (`ORD-P10-PRI-PARTIAL-1`, 75/25) | Submitted 10 to WH-A via the new Inventory Availability page | ✅ result card showed `Open` badge, released 85, backordered 15 (amber), allocation "WH-A: 10 units" (screenshot-verified) |
+| Frontend, Order Result Lookup for that same order afterward | No page-code change needed | ✅ `PartiallyReleased`, 85/15, 3 allocation rows (`WH-A:40, WH-B:35, WH-A:10`) — confirms the existing lookup page picks up CHANGE2 side effects with zero changes |
+
+No regressions found in Stage 1 or Stage 2. Every Stage 3 scenario — including
+the change request's own sequential-fill numbers and the "never allocate
+more than the remaining backorder quantity" boundary — matched exactly.
+Verification data (`CUST-P10-*`, `PROD-P10-*`, `ORD-P10-*`, plus reuse of
+Phase 7's own `ORD-P7-PRI-EQ70-1`/`ORD-P7-UI-1`) was left in the database,
+same convention as every prior phase.
+
+### Docs updated
+- `Claude.md`: header now covers all three stages/changes as **FINAL**;
+  architecture diagram's frontend/backend boxes and MSSQL table/proc counts
+  updated; new `POST /inventory-availability` API section; new "Backorder
+  fulfilment (CHANGE2)" rules section (rules 14-19); `M08944_Backorder`'s
+  data-model entry updated for its Phase 8 columns; stored procedure list
+  updated with the Phase 8 additions; added the Phase 10 end-to-end
+  verification table above, alongside the still-accurate Phase 4/7 ones.
+- `Frontend.md`: added the new page/route/nav-item to the structure tables;
+  added a "CHANGE2: Inventory Availability page" section describing what was
+  built and reused; updated "Verified" with the Phase 10 browser evidence.
+- No `Backend.md` exists in this repo (checked again this phase, same as
+  every phase since Phase 5) — `Claude.md` remains the architecture doc that
+  covers the backend.
+
+### Not done / open (final status)
+- No automated test suite exists anywhere in this repo. Every phase's
+  verification (Phase 4, 7, 10) was manual: direct API calls plus a
+  browser-driven UI check against a real MSSQL instance. This is the single
+  most significant gap relative to what the change requests ask for
+  ("Updated tests + regression evidence") — evidence exists (the tables in
+  this file and in `Claude.md`), but as manual verification logs, not a
+  runnable test suite.
+- `M08944_sp_GetBackorderByOrderId` (Phase 5) remains unused by any service.
+- Two proposed-not-confirmed decisions remain open, both flagged the same
+  way Phase 2's FRD gaps were: the `Cannot Fulfil Priority Threshold` reason
+  string (Phase 6), and defaulting a never-before-seen inventory row's
+  `earliestDispatchDate` to today (Phase 9).
+- Idempotency and concurrency handling for `POST /inventory-availability`
+  are explicitly out of scope per the change request itself, not an
+  oversight.

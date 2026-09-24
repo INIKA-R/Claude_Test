@@ -11,7 +11,8 @@ frontend/src/
   reusablecomponents/    Generic, presentation-only UI: Button, Card, TextField, SelectField,
                          Badge, LoadingState, EmptyState, ErrorState, PageHeader
   services/              All HTTP calls — apiClient.ts (axios instance + getErrorMessage),
-                         customersApi.ts, inventoryApi.ts, ordersApi.ts
+                         customersApi.ts, inventoryApi.ts, ordersApi.ts,
+                         inventoryAvailabilityApi.ts (CHANGE2, Phase 10)
   hooks/                 useAsyncData.ts — shared loading/error/data fetch lifecycle
   types/                 Mirrors backend/src/types/index.ts
 ```
@@ -27,6 +28,7 @@ receive data/handlers as props.
 |---|---|---|
 | `/customers` | `CustomerMaintenancePage` | List/create/edit/delete customers |
 | `/inventory` | `InventoryMaintenancePage` | List/create/edit/delete inventory rows (productId+warehouseId) |
+| `/inventory-availability` | `InventoryAvailabilityPage` | (CHANGE2, Phase 10) Report newly available stock, apply it to the oldest Open backorder for that product |
 | `/orders/new` | `OrderSubmissionPage` | Submit an order, view its fulfilment result |
 | `/orders/lookup` | `OrderResultLookupPage` | Look up a persisted fulfilment result by orderId |
 | `/` and unknown paths | — | Redirect to `/orders/new` |
@@ -74,11 +76,33 @@ result panel was extended in place:
   `null` for that status). Fixed with a dedicated `toast.warning` branch reporting
   released/backordered counts.
 
+## CHANGE2: Inventory Availability page (Phase 10)
+One new page, `InventoryAvailabilityPage`, for `POST /inventory-availability` — no
+new design system, built entirely from existing `reusablecomponents` (`Card`,
+`TextField`, `SelectField`, `Button`, `Badge`, `PageHeader`), following the exact
+form-then-result-card layout `OrderSubmissionPage` already established:
+- Form: Product ID (`TextField`), Warehouse (`SelectField`, same `WH-A`/`WH-B`/`WH-C`
+  options as the order form), Available Quantity (`TextField`, `type="number"`).
+- Result card: reuses the same "Released Qty / Backordered Qty" tile layout as the
+  order pages (backordered amber-highlighted when `> 0`), plus a single allocation
+  row when one exists, or a "No Open backorder existed for this product" message
+  when the response is `NoOpenBackorder`.
+- One new tone function, `backorderStatusTone`, added to `Badge.tsx` alongside the
+  existing `fulfilmentStatusTone`/`eligibilityStatusTone` (green for `Closed`, amber
+  for `Open`, slate for `NoOpenBackorder`) — same pattern, no new component.
+- New nav item "Restock" (`Truck` icon) between Inventory and New Order.
+
 ## Verified
 `npm install`, `tsc --noEmit`, and `npm run build` all pass. Phase 3 exercised every
 page in an environment with no live MSSQL instance, confirming error handling but not
 the happy paths. Phase 7 re-ran the frontend against the real MSSQL instance used in
 Phase 4-6 and confirmed, via the browser, that a Priority partial release
 (`PartiallyReleased`, released 75 / backordered 25, two allocation rows) renders
-correctly on both the Order Submission and Order Lookup pages — see `Claude.md`'s
-Phase 7 verification table for the full scenario list.
+correctly on both the Order Submission and Order Lookup pages. Phase 10 re-confirmed
+this plus the new page against the same live instance: submitting inventory against
+a real `PartiallyReleased` order's backorder correctly showed the `Open` badge,
+updated released/backordered counts, and the new allocation row on the Inventory
+Availability page itself, and the Order Result Lookup page for that same order
+picked up the change (status, quantities, and the new allocation row) with no page
+code changes needed — see `Claude.md`'s Phase 10 verification table for the full
+scenario list.

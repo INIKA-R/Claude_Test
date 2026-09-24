@@ -30,3 +30,9 @@ export function eligibilityStatusTone(status: string): Tone {
   if (status === "CreditHold") return "red";
   return "amber";
 }
+
+export function backorderStatusTone(status: string): Tone {
+  if (status === "Closed") return "green";
+  if (status === "Open") return "amber";
+  return "slate"; // NoOpenBackorder
+}
