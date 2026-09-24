@@ -14,6 +14,11 @@ an existing Phase 1-4 database; do not re-run 01-05):
 6. `tables/06_M08944_Config.sql`
 7. `tables/07_M08944_Backorder.sql`
 
+Phase 8 delta (CHANGE2: fulfil an Open backorder — run after 07 above, on
+top of an existing Phase 1-7 database; ALTERs `M08944_Backorder` in place,
+never drops it or its rows):
+8. `tables/08_M08944_Backorder_AddColumns.sql`
+
 ## Stored procedures
 
 FRD §7 indicative set (order fulfilment flow):
@@ -42,6 +47,15 @@ release threshold):
 22. `procedures/17_M08944_sp_CreateBackorder.sql`
 23. `procedures/18_M08944_sp_GetBackorderByOrderId.sql`
 24. `procedures/19_M08944_sp_GetConfigValue.sql`
+
+Phase 8 delta (CHANGE2: fulfil an Open backorder). `20_M08944_sp_CreateBackorder.sql`
+redefines (DROP+CREATE) the *same* proc as `17_M08944_sp_CreateBackorder.sql` above —
+run 17 first (Phase 5, historical), then 20 (Phase 8) to pick up the columns Phase 8
+added; re-running 20 alone on an already-Phase-8 database is also safe:
+25. `procedures/20_M08944_sp_CreateBackorder.sql`
+26. `procedures/21_M08944_sp_GetOldestOpenBackorderByProduct.sql`
+27. `procedures/22_M08944_sp_UpdateBackorder.sql`
+28. `procedures/23_M08944_sp_UpdateFulfilmentResult.sql`
 
 Tables are FK-dependency ordered. Each table/proc script is idempotent (drops the
 object first if it already exists) so scripts can be re-run safely during development.
