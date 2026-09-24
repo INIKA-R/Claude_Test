@@ -9,6 +9,11 @@ Run in this order against the target MSSQL database:
 4. `tables/04_M08944_FulfilmentResult.sql`
 5. `tables/05_M08944_Allocation.sql`
 
+Phase 5 delta (Priority partial fulfilment — run after the above, on top of
+an existing Phase 1-4 database; do not re-run 01-05):
+6. `tables/06_M08944_Config.sql`
+7. `tables/07_M08944_Backorder.sql`
+
 ## Stored procedures
 
 FRD §7 indicative set (order fulfilment flow):
@@ -31,6 +36,12 @@ is indicative rather than exhaustive):
 19. `procedures/14_M08944_sp_CreateInventory.sql`
 20. `procedures/15_M08944_sp_UpdateInventory.sql`
 21. `procedures/16_M08944_sp_DeleteInventory.sql`
+
+Phase 5 delta (Priority partial fulfilment — backorder + configurable
+release threshold):
+22. `procedures/17_M08944_sp_CreateBackorder.sql`
+23. `procedures/18_M08944_sp_GetBackorderByOrderId.sql`
+24. `procedures/19_M08944_sp_GetConfigValue.sql`
 
 Tables are FK-dependency ordered. Each table/proc script is idempotent (drops the
 object first if it already exists) so scripts can be re-run safely during development.
