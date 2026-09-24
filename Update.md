@@ -85,3 +85,36 @@
   instance, so every API call surfaced the backend's `500` (DB connection failure);
   this proved the frontend's error-handling path but not the Released/Blocked/
   idempotent-replay happy paths, which need a real database to exercise.
+
+## Phase 4 — Integration, Testing & Docs (2026-09-24)
+- Ran the SQL scripts (5 tables + 16 stored procedures) against a real MSSQL
+  instance via SSMS, then pointed `backend/.env` at it (SQL Server Authentication).
+- **Found and fixed a real bug**: `backend/src/database/db.ts` built its MSSQL
+  connection config as a module-level constant read from `process.env` at import
+  time, but `server.ts` imports the `routes` chain (which transitively imports
+  `db.ts`) *before* calling `dotenv.config()` — so the config was silently frozen
+  at its hardcoded fallback values (`localhost:1433`, no credentials) no matter
+  what `.env` said. Invisible in Phases 1-3 (every DB call failed the same way
+  either way); surfaced immediately once a real database was available. Fixed by
+  making `db.ts` build its config lazily inside `getPool()`, and moved
+  `dotenv.config()` to the first statement in `server.ts` as defense in depth.
+- Ran the frontend and backend together against the real database and exercised
+  every FRD §5 flow end-to-end (both via direct API calls and by driving the
+  actual UI): Released (including the WH-A>WH-B tie-break with two identically
+  qualifying warehouses), Blocked-CreditHold, Eligibility Unknown, Product Not
+  Available (no inventory row), Cannot Fulfil From Single Warehouse (insufficient
+  qty), duplicate-orderId idempotent replay (for both a Released and a Blocked
+  order — confirmed inventory is not double-decremented), `GET /orders/:orderId`
+  for an existing order, 404 for a non-existent order, and the `400 Customer not
+  found` gap-fill decision from Phase 2. All passed correctly — see the table in
+  `Claude.md`'s "End-to-end verification" section for the full matrix.
+- No other errors found in this pass.
+- Finalized `Claude.md`: added a full architecture diagram, an end-to-end
+  verification table, and the bug writeup above; the rest of the architecture
+  content from Phases 1-3 remains accurate and unchanged.
+- Test data seeded during this pass (customers `CUST-ELIGIBLE-1`,
+  `CUST-CREDITHOLD-1`, `CUST-UNKNOWN-1`; inventory for `PROD-A`/`PROD-B`; orders
+  `ORD-RELEASED-1` and several `ORD-BLOCKED-*`/`ORD-UI-TEST-1`) was left in the
+  database as-is — it's isolated to the `M08944_*` tables and doubles as sample
+  data for manually exploring the app; delete it via the Customer/Inventory
+  maintenance pages (or SSMS) if a clean database is wanted.

@@ -1,16 +1,23 @@
 import sql, { ConnectionPool, config as SqlConfig } from "mssql";
 
-const dbConfig: SqlConfig = {
-  server: process.env.DB_SERVER || "localhost",
-  port: Number(process.env.DB_PORT) || 1433,
-  database: process.env.DB_NAME,
-  user: process.env.DB_USER,
-  password: process.env.DB_PASSWORD,
-  options: {
-    encrypt: process.env.DB_ENCRYPT === "true",
-    trustServerCertificate: process.env.DB_TRUST_SERVER_CERTIFICATE === "true",
-  },
-};
+// Built lazily (not as a module-level constant) so this always reflects the
+// environment at connection time, regardless of when dotenv.config() runs
+// relative to this module being imported (it's imported transitively via
+// routes -> controllers -> services -> repositories, before server.ts's own
+// dotenv.config() call executes).
+function getDbConfig(): SqlConfig {
+  return {
+    server: process.env.DB_SERVER || "localhost",
+    port: Number(process.env.DB_PORT) || 1433,
+    database: process.env.DB_NAME,
+    user: process.env.DB_USER,
+    password: process.env.DB_PASSWORD,
+    options: {
+      encrypt: process.env.DB_ENCRYPT === "true",
+      trustServerCertificate: process.env.DB_TRUST_SERVER_CERTIFICATE === "true",
+    },
+  };
+}
 
 let pool: ConnectionPool | null = null;
 
@@ -18,7 +25,7 @@ export async function getPool(): Promise<ConnectionPool> {
   if (pool && pool.connected) {
     return pool;
   }
-  pool = await new sql.ConnectionPool(dbConfig).connect();
+  pool = await new sql.ConnectionPool(getDbConfig()).connect();
   return pool;
 }
 
