@@ -1,10 +1,19 @@
 import { Request, Response } from "express";
 import * as ordersService from "../services/orders.service";
+import { CreateOrderRequest } from "../types";
+import { ApiError } from "../utils/ApiError";
+import { validateCreateOrderRequest } from "../utils/validation";
 
-// Route → Controller → Service flow (FRD §6). Logic added in a later phase.
+// Route -> Controller -> Service -> DB -> Stored Proc flow (FRD §6).
 
 export async function createOrder(req: Request, res: Response): Promise<void> {
-  const result = await ordersService.createOrder(req.body);
+  const errors = validateCreateOrderRequest(req.body);
+  if (errors.length > 0) {
+    throw new ApiError(400, "Invalid request", errors);
+  }
+
+  const payload = req.body as CreateOrderRequest;
+  const result = await ordersService.createOrder(payload);
   res.status(200).json(result);
 }
 

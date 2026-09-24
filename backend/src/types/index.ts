@@ -69,3 +69,27 @@ export interface ApiErrorResponse {
   error: string;
   details?: unknown;
 }
+
+// Customer/Inventory master-data CRUD request shapes (not specified in FRD §5;
+// designed to match the entity fields in FRD §2).
+
+export interface CreateCustomerRequest {
+  customerId: string;
+  eligibilityStatus: EligibilityStatus;
+}
+
+export interface UpdateCustomerRequest {
+  eligibilityStatus: EligibilityStatus;
+}
+
+export interface CreateInventoryRequest {
+  productId: string;
+  warehouseId: WarehouseId;
+  availableQuantity: number;
+  earliestDispatchDate: string;
+}
+
+export interface UpdateInventoryRequest {
+  availableQuantity: number;
+  earliestDispatchDate: string;
+}
